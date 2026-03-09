@@ -10,7 +10,7 @@ This repository now includes a modular foundation for a PySide6 glioma contour v
 - `study_loader.py`: high-level `load_study(ct_folder, rtstruct_path)` API returning one coherent in-memory study.
 - `viewer_state.py` and `editor_state.py`: app/view/edit state models for upcoming brush editing.
 - `export_service.py`: app service wrapper to export edited ROI masks using existing `dicom_export.py` logic.
-- `gui/`: minimal PySide6 MVP (`main_window.py`, `slice_canvas.py`) for loading CT+RTSTRUCT, scrolling slices, and ROI overlay viewing.
+- `gui/`: minimal PySide6 MVP (`main_window.py`, `slice_canvas.py`) for loading a patient folder (auto-matched CT+RTSTRUCT), scrolling slices, and ROI overlay viewing.
 - `app.py`: desktop entrypoint.
 
 ## Migration note

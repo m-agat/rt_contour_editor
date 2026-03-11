@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
-from scipy.ndimage import binary_erosion, generate_binary_structure
+from scipy.ndimage import binary_erosion, generate_binary_structure, distance_transform_edt
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +93,7 @@ class UncertaintyOutputs:
     contour_heat: np.ndarray  # float32 (Z,Y,X)           — heatmap on boundary only
     contour_bin:  np.ndarray  # uint8   (Z,Y,X) 0/1       — binary on boundary only
     contour_mask: np.ndarray  # bool    (Z,Y,X)           — boundary voxels
+    blob_heat:    np.ndarray  # float32 (Z,Y,X)           — propagated heat inside ROI (filled blob)
 
 
 def make_uncertainty_outputs(
@@ -121,9 +122,41 @@ def make_uncertainty_outputs(
     else:
         raise ValueError(f"Unknown contour_mode: {contour_mode!r}")
 
+    c_heat = contour_heat(mask_ai, u, contour_connectivity)
+
+    # Propagate boundary uncertainty values inward so that the entire ROI is
+    # represented as a filled blob where voxels nearer the boundary inherit
+    # the uncertainty of their nearest boundary point and are attenuated as
+    # distance to the boundary grows. This produces a per-voxel heatmap
+    # `blob_heat` inside the ROI (zeros outside).
+    if mask_ai.any():
+        # distance_transform_edt on (~bnd) yields distance to the nearest
+        # boundary voxel (since boundary voxels are False in (~bnd)). We also
+        # request indices to locate the nearest boundary voxel for each point.
+        dist, inds = distance_transform_edt(~bnd, return_indices=True)
+
+        # inds is an array of shape (3, Z, Y, X) for 3D indexing
+        nearest_vals = c_heat[inds[0], inds[1], inds[2]]
+
+        # Only consider distances inside the AI mask for normalization
+        inside_dist = dist.copy()
+        max_dist = float(inside_dist[mask_ai].max()) if inside_dist[mask_ai].size > 0 else 0.0
+        eps = 1e-6
+        if max_dist <= 0.0:
+            attenuation = np.ones_like(dist, dtype=np.float32)
+        else:
+            attenuation = np.clip(1.0 - (inside_dist.astype(np.float32) / (max_dist + eps)), 0.0, 1.0)
+
+        blob = (nearest_vals.astype(np.float32) * attenuation.astype(np.float32))
+        blob[~mask_ai] = 0.0
+        blob = np.clip(blob, 0.0, 1.0).astype(np.float32)
+    else:
+        blob = np.zeros_like(u, dtype=np.float32)
+
     return UncertaintyOutputs(
         u_heat       = u,
-        contour_heat = contour_heat(mask_ai, u, contour_connectivity),
+        contour_heat = c_heat,
         contour_bin  = c_bin,
         contour_mask = bnd,
+        blob_heat    = blob,
     )

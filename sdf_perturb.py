@@ -76,8 +76,11 @@ def perturb_mask_via_sdf(
         sdf_mm: float32 (Z,Y,X) original sdf
         delta_mm: float32 (Z,Y,X) added perturbation in mm
     """
+    # Work on a copy to avoid mutating caller-provided arrays
+    mask_gt = mask_gt.copy()
     rng = np.random.default_rng(seed)
 
+    # Compute signed distance field from a copy
     sdf_mm = signed_distance_mm(mask_gt, spacing_zyx_mm)
 
     # Smooth random field in voxel units (convert smooth_mm -> sigma_vox)
@@ -103,6 +106,7 @@ def perturb_mask_via_sdf(
     mask_ai = sdf_pert <= 0.0
 
     if postprocess:
+        # postprocess returns new arrays; ensure originals are not modified
         mask_ai = binary_fill_holes(mask_ai)
         mask_ai = _keep_largest_component(mask_ai)
 
@@ -129,6 +133,8 @@ def pseudo_ensemble_probability(
     amp_jitter: relative std-dev for amplitude (e.g. 0.35 means ~35% jitter)
     bias_jitter_mm: add small random global bias per sample to simulate systematic shifts
     """
+    # Work on a copy to avoid mutating the caller's mask
+    mask_gt = mask_gt.copy()
     rng = np.random.default_rng(seed)
     acc = np.zeros(mask_gt.shape, dtype=np.float32)
 

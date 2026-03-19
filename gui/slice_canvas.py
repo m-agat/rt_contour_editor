@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import matplotlib.cm as cm
 from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QImage, QMouseEvent, QPainter, QPen, QPixmap
+from PySide6.QtGui import QImage, QMouseEvent, QPainter, QPen, QPixmap, QColor, QBrush
 from PySide6.QtWidgets import QLabel
 
 
@@ -32,6 +32,15 @@ class SliceCanvas(QLabel):
         self._edit_enabled = False
         self._brush_mode = "add"
         self._last_pixmap_size = (1, 1)
+        # Hover label state (shows ROI/AI/uncertainty at cursor)
+        self._hover_labels_enabled = True
+        self._last_mouse_pos: QPoint | None = None
+        # store last rendered overlay slices for querying by hover
+        self._last_roi_layers: list[tuple[str, np.ndarray]] = []
+        self._last_unc_heat_slice: np.ndarray | None = None
+        self._last_contour_bin: np.ndarray | None = None
+        # tooltip explaining uncertainty
+        self.setToolTip("Uncertainty: High uncertainty indicates model disagreement near the boundary.")
 
     def set_editing(self, enabled: bool, brush_mode: str) -> None:
         self._edit_enabled = enabled
@@ -49,9 +58,12 @@ class SliceCanvas(QLabel):
         blend_opacity: float = 0.35,
         roi_layers: list[tuple[str, np.ndarray]] | None = None,
         active_edit_mask: np.ndarray | None = None,
+        original_edit_mask: np.ndarray | None = None,
         unc_heat: np.ndarray | None = None,
         contour_bin: np.ndarray | None = None,
         zoom: float = 1.0,
+        active_roi: str | None = None,
+        unc_mode_text: str | None = None,
     ) -> None:
         self._zoom = float(max(zoom, 0.1))
         self._image_shape = base_slice.shape
@@ -61,6 +73,7 @@ class SliceCanvas(QLabel):
             blend_opacity=blend_opacity,
             roi_layers=roi_layers or [],
             active_edit_mask=active_edit_mask,
+            original_edit_mask=original_edit_mask,
             unc_heat=unc_heat,
             contour_bin=contour_bin,
         )
@@ -74,6 +87,21 @@ class SliceCanvas(QLabel):
             pix = pix.scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self._last_pixmap_size = (pix.width(), pix.height())
         self.setPixmap(pix)
+        # store info for hover queries
+        self._last_roi_layers = [(n, np.asarray(m, dtype=bool)) for n, m in (roi_layers or [])]
+        self._last_unc_heat_slice = np.asarray(unc_heat, dtype=float) if unc_heat is not None else None
+        self._last_contour_bin = np.asarray(contour_bin, dtype=bool) if contour_bin is not None else None
+        # keep active labels info too
+        self._last_active_roi = active_roi
+        self._last_unc_mode = unc_mode_text
+
+    def set_hover_labels_enabled(self, show: bool) -> None:
+        self._hover_labels_enabled = bool(show)
+        self.update()
+
+    def set_legend_visibility(self, show: bool) -> None:
+        self._show_legend = bool(show)
+        self.update()
 
     def _render_rgb(
         self,
@@ -83,6 +111,7 @@ class SliceCanvas(QLabel):
         blend_opacity: float,
         roi_layers: list[tuple[str, np.ndarray]],
         active_edit_mask: np.ndarray | None,
+        original_edit_mask: np.ndarray | None,
         unc_heat: np.ndarray | None,
         contour_bin: np.ndarray | None,
     ) -> np.ndarray:
@@ -118,11 +147,27 @@ class SliceCanvas(QLabel):
             alpha = (0.7 * heat)[..., None]
             rgb_f[heat_mask] = (1.0 - alpha[heat_mask]) * rgb_f[heat_mask] + alpha[heat_mask] * color_rgb[heat_mask]
 
+        # Show edited mask with subtle overlay and highlight differences vs original
         if active_edit_mask is not None:
             edit_mask = np.asarray(active_edit_mask, dtype=bool)
-            color = np.array([0, 229, 255], dtype=np.float32)
-            alpha = 0.35
-            rgb_f[edit_mask] = (1.0 - alpha) * rgb_f[edit_mask] + alpha * color
+            # base edit overlay (cyan-ish)
+            edit_color = np.array([0, 229, 255], dtype=np.float32)
+            edit_alpha = 0.28
+            rgb_f[edit_mask] = (1.0 - edit_alpha) * rgb_f[edit_mask] + edit_alpha * edit_color
+
+            # If we have the original mask, highlight additions/removals
+            if original_edit_mask is not None:
+                orig_mask = np.asarray(original_edit_mask, dtype=bool)
+                added = edit_mask & (~orig_mask)
+                removed = orig_mask & (~edit_mask)
+                if added.any():
+                    add_col = np.array([0, 200, 0], dtype=np.float32)  # green for added
+                    add_alpha = 0.6
+                    rgb_f[added] = (1.0 - add_alpha) * rgb_f[added] + add_alpha * add_col
+                if removed.any():
+                    rem_col = np.array([255, 50, 50], dtype=np.float32)  # red for removed
+                    rem_alpha = 0.6
+                    rgb_f[removed] = (1.0 - rem_alpha) * rgb_f[removed] + rem_alpha * rem_col
 
         rgb = np.clip(rgb_f, 0, 255).astype(np.uint8)
 
@@ -155,6 +200,15 @@ class SliceCanvas(QLabel):
         img_y = int(np.clip((y / pix_h) * img_h, 0, img_h - 1))
         return img_x, img_y
 
+    def enterEvent(self, event) -> None:  # show hover when entering
+        super().enterEvent(event)
+        self._last_mouse_pos = None
+
+    def leaveEvent(self, event) -> None:  # hide hover when leaving
+        super().leaveEvent(event)
+        self._last_mouse_pos = None
+        self.update()
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._edit_enabled and event.button() in {Qt.LeftButton, Qt.RightButton}:
             coords = self._event_to_image_xy(event.position().toPoint())
@@ -166,6 +220,13 @@ class SliceCanvas(QLabel):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        # track mouse for hover labels regardless of edit state
+        try:
+            self._last_mouse_pos = event.position().toPoint()
+        except Exception:
+            self._last_mouse_pos = event.pos()
+        self.update()
+
         if self._edit_enabled and event.buttons() & (Qt.LeftButton | Qt.RightButton):
             coords = self._event_to_image_xy(event.position().toPoint())
             if coords is not None:
@@ -182,11 +243,71 @@ class SliceCanvas(QLabel):
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
-        if not self._edit_enabled:
-            return
         painter = QPainter(self)
-        pen = QPen(Qt.white)
-        pen.setWidth(1)
-        painter.setPen(pen)
-        painter.drawText(12, 24, "Edit mode")
+
+        # Draw edit mode label when editing enabled
+        if self._edit_enabled:
+            pen = QPen(Qt.white)
+            pen.setWidth(1)
+            painter.setPen(pen)
+            painter.drawText(12, 24, "Edit mode")
+
+        # Hover labels: show ROI names / AI / uncertainty under cursor
+        if self._hover_labels_enabled and self._last_mouse_pos is not None:
+            pixmap = self.pixmap()
+            if pixmap is not None and not pixmap.isNull():
+                coords = self._event_to_image_xy(self._last_mouse_pos)
+                if coords is not None:
+                    img_x, img_y = coords
+                    labels: list[str] = []
+                    # check ROI layers
+                    for name, mask in self._last_roi_layers:
+                        try:
+                            if mask[img_y, img_x]:
+                                labels.append(name)
+                        except Exception:
+                            continue
+                    # contour bin
+                    try:
+                        if self._last_contour_bin is not None and self._last_contour_bin[img_y, img_x]:
+                            labels.append("contour")
+                    except Exception:
+                        pass
+                    # uncertainty value
+                    unc_text = None
+                    try:
+                        if self._last_unc_heat_slice is not None:
+                            val = float(self._last_unc_heat_slice[img_y, img_x])
+                            unc_text = f"uncertainty: {val:.3f}"
+                    except Exception:
+                        unc_text = None
+                    if unc_text:
+                        labels.append(unc_text)
+
+                    if labels:
+                        text = ", ".join(labels)
+                        fm = painter.fontMetrics()
+                        padding = 6
+                        text_w = fm.horizontalAdvance(text)
+                        text_h = fm.height()
+                        # draw near cursor but keep inside pixmap bounds
+                        w = self.width()
+                        h = self.height()
+                        px = self._last_mouse_pos.x()
+                        py = self._last_mouse_pos.y()
+                        box_w = text_w + padding * 2
+                        box_h = text_h + padding * 2
+                        box_x = px + 12
+                        box_y = py + 12
+                        if box_x + box_w > w:
+                            box_x = px - box_w - 12
+                        if box_y + box_h > h:
+                            box_y = py - box_h - 12
+
+                        painter.setPen(Qt.NoPen)
+                        painter.setBrush(QBrush(QColor(0, 0, 0, 180)))
+                        painter.drawRoundedRect(box_x, box_y, box_w, box_h, 6, 6)
+                        painter.setPen(Qt.white)
+                        painter.drawText(box_x + padding, box_y + padding + fm.ascent(), text)
+
         painter.end()

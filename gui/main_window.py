@@ -25,6 +25,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QVBoxLayout,
     QWidget,
+    QGroupBox,
+    QStackedWidget,
 )
 
 from ct_rtstruct_matching import find_ct_and_rtstruct
@@ -57,7 +59,6 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout(root)
         main_layout.setContentsMargins(16, 16, 16, 16)
         main_layout.setSpacing(16)
-
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
         sidebar_layout = QVBoxLayout(sidebar)
@@ -71,22 +72,47 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(title)
         sidebar_layout.addWidget(subtitle)
 
+        # Helper to create a collapsible group with an internal container widget
+        self._sidebar_groups: list[QGroupBox] = []
+
+        def make_group(title_text: str, expanded: bool = False):
+            gb = QGroupBox(title_text)
+            gb.setCheckable(True)
+            gb.setChecked(expanded)
+            container = QWidget()
+            container_layout = QVBoxLayout(container)
+            container_layout.setSpacing(6)
+            box_layout = QVBoxLayout()
+            box_layout.addWidget(container)
+            gb.setLayout(box_layout)
+            # attach container so toggle handler can show/hide it
+            gb._container = container
+            gb.toggled.connect(lambda checked, g=gb: self._on_sidebar_group_toggled(g, checked))
+            self._sidebar_groups.append(gb)
+            # Do not add directly to sidebar layout here; groups will be
+            # presented one-at-a-time inside the workflow stepper (stack).
+            return gb, container_layout
+
+        # Patient group
+        patient_group, patient_layout = make_group("Patient", expanded=True)
         open_btn = QPushButton("Open Patient Folder")
         open_btn.clicked.connect(self._open_patient_folder)
-        sidebar_layout.addWidget(open_btn)
+        patient_layout.addWidget(open_btn)
 
         self.path_label = QLabel("No patient loaded")
         self.path_label.setWordWrap(True)
-        sidebar_layout.addWidget(self.path_label)
+        patient_layout.addWidget(self.path_label)
 
         self.progress_label = QLabel("")
         self.progress_label.setWordWrap(True)
-        sidebar_layout.addWidget(self.progress_label)
+        patient_layout.addWidget(self.progress_label)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0)
         self.progress_bar.hide()
-        sidebar_layout.addWidget(self.progress_bar)
+        patient_layout.addWidget(self.progress_bar)
 
+        # Image Controls group (contains series selection + blend opacity)
+        image_group, image_layout = make_group("Image Controls")
         series_form = QFormLayout()
         self.base_series_combo = QComboBox()
         self.base_series_combo.currentTextChanged.connect(self._on_base_series_changed)
@@ -99,27 +125,34 @@ class MainWindow(QMainWindow):
         self.blend_opacity.setValue(35)
         self.blend_opacity.valueChanged.connect(self._on_blend_opacity_changed)
         series_form.addRow("Blend opacity", self.blend_opacity)
-        sidebar_layout.addLayout(series_form)
+        image_layout.addLayout(series_form)
+        
+        # Hover label toggle (show labels on image hover)
+        self.legend_checkbox = QCheckBox("Show labels on hover")
+        self.legend_checkbox.setChecked(True)
+        self.legend_checkbox.setToolTip("Toggle showing ROI/AI/uncertainty labels when hovering the image.")
+        image_layout.addWidget(self.legend_checkbox)
 
+        # ROI Selection group (Selected structure + Displayed structures)
+        roi_group, roi_layout = make_group("ROI Selection")
         self.structure_combo = QComboBox()
         self.structure_combo.currentTextChanged.connect(self._on_roi_changed)
-        sidebar_layout.addWidget(QLabel("Selected structure"))
-        sidebar_layout.addWidget(self.structure_combo)
+        roi_layout.addWidget(self.structure_combo)
         structure_hint = QLabel("Use the selected structure for editing and as the reference for other actions.")
         structure_hint.setWordWrap(True)
         structure_hint.setObjectName("hint")
-        sidebar_layout.addWidget(structure_hint)
+        roi_layout.addWidget(structure_hint)
 
-        sidebar_layout.addWidget(QLabel("Displayed structures"))
         self.overlay_list = QListWidget()
         self.overlay_list.itemChanged.connect(lambda _item: self._refresh_canvas())
-        sidebar_layout.addWidget(self.overlay_list)
+        roi_layout.addWidget(self.overlay_list)
         overlay_hint = QLabel("Check the contours you want to see on top of the current image.")
         overlay_hint.setWordWrap(True)
         overlay_hint.setObjectName("hint")
-        sidebar_layout.addWidget(overlay_hint)
+        roi_layout.addWidget(overlay_hint)
 
-        sidebar_layout.addWidget(QLabel("AI-model contour"))
+        # AI & Uncertainty group
+        ai_group, ai_layout = make_group("AI & Uncertainty")
         ai_form = QFormLayout()
         self.ai_target_combo = QComboBox()
         ai_form.addRow("Target region", self.ai_target_combo)
@@ -128,15 +161,23 @@ class MainWindow(QMainWindow):
         self.unc_mode.setCurrentText("Both")
         self.unc_mode.currentTextChanged.connect(lambda _text: self._refresh_canvas())
         ai_form.addRow("Overlay view", self.unc_mode)
-        sidebar_layout.addLayout(ai_form)
+        # Allow toggling uncertainty overlays independently of editing
+        self.show_unc_checkbox = QCheckBox("Overlay uncertainty")
+        self.show_unc_checkbox.setChecked(True)
+        self.show_unc_checkbox.setToolTip("Toggle whether AI uncertainty overlays are shown on the image.")
+        self.show_unc_checkbox.toggled.connect(lambda _b: self._refresh_canvas())
+        ai_form.addRow("Show uncertainty", self.show_unc_checkbox)
+        ai_layout.addLayout(ai_form)
         ai_hint = QLabel("Generate a simulated AI contour for the chosen region, then inspect the uncertainty overlay.")
         ai_hint.setWordWrap(True)
         ai_hint.setObjectName("hint")
-        sidebar_layout.addWidget(ai_hint)
+        ai_layout.addWidget(ai_hint)
         create_unc_btn = QPushButton("Generate AI Model Contour")
         create_unc_btn.clicked.connect(self._on_create_uncertainty)
-        sidebar_layout.addWidget(create_unc_btn)
+        ai_layout.addWidget(create_unc_btn)
 
+        # Editing group
+        edit_group, edit_layout = make_group("Editing")
         edit_frame = QFrame()
         edit_form = QFormLayout(edit_frame)
         edit_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -178,7 +219,34 @@ class MainWindow(QMainWindow):
         save_btn.setMinimumHeight(40)
         save_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         edit_form.addRow(save_btn)
-        sidebar_layout.addWidget(edit_frame)
+        edit_layout.addWidget(edit_frame)
+
+        # Create a stacked widget to present one workflow step (group) at a time
+        self.step_stack = QStackedWidget()
+        for gb in self._sidebar_groups:
+            # add the group box itself as a page
+            self.step_stack.addWidget(gb)
+
+        sidebar_layout.addWidget(self.step_stack)
+
+        # Navigation buttons for the stepper
+        nav_layout = QHBoxLayout()
+        nav_layout.setSpacing(8)
+        self.back_step_btn = QPushButton("Back")
+        self.next_step_btn = QPushButton("Next")
+        self.back_step_btn.clicked.connect(self._on_step_back)
+        self.next_step_btn.clicked.connect(self._on_step_next)
+        nav_layout.addWidget(self.back_step_btn)
+        nav_layout.addWidget(self.next_step_btn)
+        sidebar_layout.addLayout(nav_layout)
+
+        # Ensure containers reflect the group's checked state on startup
+        for gb in self._sidebar_groups:
+            try:
+                gb._container.setVisible(gb.isChecked())
+            except Exception:
+                pass
+
         sidebar_layout.addStretch(1)
 
         sidebar_scroll = QScrollArea()
@@ -197,6 +265,12 @@ class MainWindow(QMainWindow):
         self.canvas.strokeStarted.connect(self._begin_brush_stroke)
         self.canvas.editRequested.connect(self._apply_brush)
         viewer_layout.addWidget(self.canvas, stretch=1)
+        # Connect hover-label toggle now that the canvas exists
+        try:
+            self.legend_checkbox.toggled.connect(self.canvas.set_hover_labels_enabled)
+            self.canvas.set_hover_labels_enabled(self.legend_checkbox.isChecked())
+        except Exception:
+            pass
 
         bottom_bar = QHBoxLayout()
         self.slice_label = QLabel("Slice 0")
@@ -217,6 +291,71 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(sidebar_scroll)
         main_layout.addWidget(viewer, stretch=1)
         self.setCentralWidget(root)
+
+    # --- Workflow stepper handlers ---
+    def _on_step_back(self) -> None:
+        idx = self.step_stack.currentIndex()
+        if idx <= 0:
+            return
+        self.step_stack.setCurrentIndex(idx - 1)
+        self._update_step_controls()
+
+    def _on_step_next(self) -> None:
+        idx = self.step_stack.currentIndex()
+        # If we're on the last page, treat Next as Finish/Save
+        if idx >= self.step_stack.count() - 1:
+            # trigger save/export action for the final step
+            self._save_edited_roi()
+            return
+        # Only allow advancing if current step's prerequisites are met
+        if not self._can_advance_from(idx):
+            return
+        self.step_stack.setCurrentIndex(idx + 1)
+        self._update_step_controls()
+
+    def _can_advance_from(self, idx: int) -> bool:
+        # Step 0: Load patient -> require study loaded
+        if idx == 0:
+            return self.study is not None
+        # Step 1: Review images -> require series available
+        if idx == 1:
+            return self.study is not None and self.base_series_combo.count() > 0
+        # Step 2: ROI & AI -> require an ROI selected
+        if idx == 2:
+            return self.state.active_roi is not None
+        # Step 3: Editing -> allow even if not editing enabled (user may skip)
+        return True
+
+    def _update_step_controls(self) -> None:
+        idx = self.step_stack.currentIndex()
+        self.back_step_btn.setEnabled(idx > 0)
+        # Next enabled if can advance from current step or if not last page
+        self.next_step_btn.setEnabled(self._can_advance_from(idx) or idx < (self.step_stack.count() - 1))
+
+
+    def _on_sidebar_group_toggled(self, group: QGroupBox, checked: bool) -> None:
+        """Show/hide the group's container and ensure only one group is expanded.
+
+        This keeps the sidebar compact: when a group is opened, other groups
+        are collapsed.
+        """
+        # toggle visibility of the attached container if present
+        try:
+            group._container.setVisible(checked)
+        except Exception:
+            pass
+
+        if checked:
+            for g in self._sidebar_groups:
+                if g is not group:
+                    # avoid re-entrancy signals while changing other groups
+                    g.blockSignals(True)
+                    g.setChecked(False)
+                    try:
+                        g._container.setVisible(False)
+                    except Exception:
+                        pass
+                    g.blockSignals(False)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
@@ -309,6 +448,12 @@ class MainWindow(QMainWindow):
         self.slice_slider.setValue(0)
         self.state.active_slice_index = 0
         self._refresh_canvas()
+        # Update stepper controls — loading a patient unlocks later steps
+        try:
+            self.step_stack.setCurrentIndex(0)
+        except Exception:
+            pass
+        self._update_step_controls()
 
     def _populate_series_controls(self) -> None:
         if self.study is None:
@@ -590,18 +735,47 @@ class MainWindow(QMainWindow):
 
         unc_heat = None
         contour_bin = None
-        active_roi = self.state.active_roi
-        if active_roi in self.unc_results:
-            entry = self.unc_results[active_roi]
-            blob = entry.get("blob_heat")
-            pmap = entry.get("pmap")
-            unc = entry.get("unc")
-            if self.unc_mode.currentText() in {"Continuous", "Both"}:
-                unc_heat = blob[z] if blob is not None else pmap[z]
-            if self.unc_mode.currentText() in {"Binary", "Both"} and unc is not None:
-                contour_bin = unc.contour_bin[z].astype(bool)
+
+        # Combine uncertainty overlays across visible AI layers if the user enabled it,
+        # otherwise show uncertainty only for the active ROI (legacy behavior).
+        if getattr(self, "show_unc_checkbox", None) and self.show_unc_checkbox.isChecked():
+            for roi_name in self._visible_roi_names():
+                if roi_name in self.unc_results:
+                    entry = self.unc_results[roi_name]
+                    blob = entry.get("blob_heat")
+                    pmap = entry.get("pmap")
+                    unc = entry.get("unc")
+                    if self.unc_mode.currentText() in {"Continuous", "Both"}:
+                        cur_heat = None
+                        if blob is not None:
+                            cur_heat = blob[z]
+                        elif pmap is not None:
+                            cur_heat = pmap[z]
+                        if cur_heat is not None:
+                            if unc_heat is None:
+                                unc_heat = cur_heat.copy()
+                            else:
+                                unc_heat = np.maximum(unc_heat, cur_heat)
+                    if self.unc_mode.currentText() in {"Binary", "Both"} and unc is not None:
+                        cur_contour = unc.contour_bin[z].astype(bool)
+                        if contour_bin is None:
+                            contour_bin = cur_contour.copy()
+                        else:
+                            contour_bin |= cur_contour
+        else:
+            active_roi = self.state.active_roi
+            if active_roi in self.unc_results:
+                entry = self.unc_results[active_roi]
+                blob = entry.get("blob_heat")
+                pmap = entry.get("pmap")
+                unc = entry.get("unc")
+                if self.unc_mode.currentText() in {"Continuous", "Both"}:
+                    unc_heat = blob[z] if blob is not None else (pmap[z] if pmap is not None else None)
+                if self.unc_mode.currentText() in {"Binary", "Both"} and unc is not None:
+                    contour_bin = unc.contour_bin[z].astype(bool)
 
         active_edit_slice = None
+        original_edit_slice = None
         if (
             self.editor.editing_enabled
             and self.editor.edited_roi_name
@@ -609,6 +783,12 @@ class MainWindow(QMainWindow):
             and self.editor.edited_roi_name in self._visible_roi_names()
         ):
             active_edit_slice = self.editor.editable_mask_volume[z]
+            # If we have a source ROI stored in editor.active_roi, try to fetch that
+            src_name = getattr(self.editor, "active_roi", None)
+            if src_name and src_name in self.study.roi_masks:
+                src_vol = self.study.roi_masks.get(src_name)
+                if src_vol is not None and src_vol.shape == self.editor.editable_mask_volume.shape:
+                    original_edit_slice = src_vol[z]
 
         self.canvas.set_editing(self.editor.editing_enabled, self.editor.brush_mode)
         self.canvas.render_slice(
@@ -617,9 +797,12 @@ class MainWindow(QMainWindow):
             blend_opacity=self.state.blend_opacity,
             roi_layers=roi_layers,
             active_edit_mask=active_edit_slice,
+            original_edit_mask=original_edit_slice,
             unc_heat=unc_heat,
             contour_bin=contour_bin,
             zoom=self.state.zoom,
+            active_roi=self.state.active_roi,
+            unc_mode_text=self.unc_mode.currentText(),
         )
 
     def _set_busy(self, busy: bool, message: str = "") -> None:

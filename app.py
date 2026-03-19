@@ -10,10 +10,13 @@ from gui.main_window import MainWindow
 def main() -> int:
     app = QApplication(sys.argv)
     window = MainWindow()
-    window.resize(900, 900)
+    # Avoid forcing an initial top-level size on Wayland. Some compositors
+    # maximize the window immediately and Qt can then submit a buffer that
+    # no longer matches the configured surface size.
+    window.setMinimumSize(900, 900)
     window.show()
     return app.exec()
 
-
+ 
 if __name__ == "__main__":
     raise SystemExit(main())

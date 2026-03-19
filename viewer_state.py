@@ -11,3 +11,6 @@ class ViewerState:
     active_slice_index: int = 0
     overlay_visible: bool = True
     zoom: float = 1.0
+    base_series: str = "CT"
+    blend_series: str | None = None
+    blend_opacity: float = 0.35

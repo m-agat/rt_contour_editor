@@ -12,6 +12,8 @@ class EditorState:
     active_roi: str | None = None
     active_slice_index: int = 0
     editable_mask_volume: np.ndarray | None = None
+    edited_roi_name: str | None = None
+    editing_enabled: bool = False
     brush_mode: str = "add"
     brush_radius: int = 3
     undo_stack: list[np.ndarray] = field(default_factory=list)

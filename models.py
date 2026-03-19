@@ -30,6 +30,17 @@ class RoiLayer:
 
 
 @dataclass
+class ImageSeries:
+    """A named image series in ``(Z, Y, X)`` layout."""
+
+    name: str
+    modality: str
+    series_instance_uid: str
+    volume: np.ndarray
+    geometry: VolumeGeometry
+
+
+@dataclass
 class LoadedStudy:
     """Unified in-memory study representation for GUI and editing workflows."""
 
@@ -37,6 +48,7 @@ class LoadedStudy:
     geometry: VolumeGeometry
     roi_masks: dict[str, np.ndarray]
     roi_names: list[str]
+    image_series: dict[str, ImageSeries]
     ct_folder: Path
     rtstruct_path: Path
     metadata: DicomStudyMetadata

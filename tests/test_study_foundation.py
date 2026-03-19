@@ -47,6 +47,38 @@ def _write_ct_slice(path: Path, z_mm: float, value: int, *, sop_uid: str | None 
     return str(ds.SOPInstanceUID)
 
 
+def _write_mr_slice(path: Path, z_mm: float, value: int, *, series_uid: str = "5.6.7.8") -> str:
+    file_meta = FileMetaDataset()
+    file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.4"
+    file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+
+    ds = FileDataset(str(path), {}, file_meta=file_meta, preamble=b"\x00" * 128)
+    ds.is_little_endian = True
+    ds.is_implicit_VR = False
+    ds.Modality = "MR"
+    ds.PatientID = "P001"
+    ds.PatientName = "Test^Patient"
+    ds.StudyInstanceUID = "1.2.3"
+    ds.SeriesInstanceUID = series_uid
+    ds.FrameOfReferenceUID = "9.9.9"
+    ds.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+    ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
+    ds.ImagePositionPatient = [0, 0, float(z_mm)]
+    ds.PixelSpacing = [1.0, 1.0]
+    ds.Rows = 4
+    ds.Columns = 4
+    ds.BitsAllocated = 16
+    ds.BitsStored = 16
+    ds.HighBit = 15
+    ds.PixelRepresentation = 1
+    ds.SamplesPerPixel = 1
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.PixelData = (np.ones((4, 4), dtype=np.int16) * value).tobytes()
+    pydicom.dcmwrite(str(path), ds, write_like_original=False)
+    return str(ds.SOPInstanceUID)
+
+
 def test_slice_sorting_consistency(tmp_path: Path) -> None:
     ct_dir = tmp_path / "ct"
     ct_dir.mkdir()
@@ -78,6 +110,10 @@ def test_load_study_metadata_and_shape(tmp_path: Path, monkeypatch) -> None:
     ct_dir.mkdir()
     _write_ct_slice(ct_dir / "a.dcm", z_mm=0.0, value=1)
     _write_ct_slice(ct_dir / "b.dcm", z_mm=1.0, value=2)
+    mr_dir = tmp_path / "mr"
+    mr_dir.mkdir()
+    _write_mr_slice(mr_dir / "mr_a.dcm", z_mm=0.0, value=11)
+    _write_mr_slice(mr_dir / "mr_b.dcm", z_mm=1.0, value=12)
 
     rtstruct_path = tmp_path / "rtstruct.dcm"
     ds = Dataset()
@@ -98,6 +134,9 @@ def test_load_study_metadata_and_shape(tmp_path: Path, monkeypatch) -> None:
     assert study.ct_volume.shape == (2, 4, 4)
     assert study.roi_masks["GTV"].shape == study.ct_volume.shape
     assert study.metadata.rtstruct_sop_instance_uid == "7.7.7"
+    assert "CT" in study.image_series
+    assert "mr" in study.image_series
+    assert study.image_series["mr"].volume.shape == study.ct_volume.shape
 
 
 def test_export_service_minimal(tmp_path: Path) -> None:
@@ -107,6 +146,7 @@ def test_export_service_minimal(tmp_path: Path) -> None:
         geometry=geom,
         roi_masks={"GTV": np.zeros((2, 4, 4), dtype=bool)},
         roi_names=["GTV"],
+        image_series={},
         ct_folder=tmp_path,
         rtstruct_path=tmp_path / "in_rtstruct.dcm",
         metadata=DicomStudyMetadata(

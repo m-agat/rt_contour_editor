@@ -46,6 +46,42 @@ def discover_ct_slices(ct_folder: Path, *, stop_before_pixels: bool = False) -> 
     return slices
 
 
+def discover_modality_slices(
+    folder: Path,
+    modality: str,
+    *,
+    stop_before_pixels: bool = False,
+) -> list[Dataset]:
+    """Load all DICOM datasets with the requested modality from ``folder`` recursively."""
+    wanted = modality.upper()
+    slices: list[Dataset] = []
+    for file_path in sorted(folder.rglob("*")):
+        ds = read_dicom_safe(file_path, stop_before_pixels=stop_before_pixels)
+        if ds is None:
+            continue
+        if getattr(ds, "Modality", "").upper() != wanted:
+            continue
+        slices.append(ds)
+    return slices
+
+
+def discover_series_by_modality(visit_dir: Path, modality: str) -> dict[str, list[Path]]:
+    """Index all series for ``modality`` under ``visit_dir`` as ``{SeriesInstanceUID: files}``."""
+    wanted = modality.upper()
+    indexed: dict[str, list[Path]] = {}
+    for file_path in sorted(Path(visit_dir).rglob("*")):
+        ds = read_dicom_safe(file_path, stop_before_pixels=True)
+        if ds is None:
+            continue
+        if getattr(ds, "Modality", "").upper() != wanted:
+            continue
+        series_uid = str(getattr(ds, "SeriesInstanceUID", "")).strip()
+        if not series_uid:
+            continue
+        indexed.setdefault(series_uid, []).append(file_path)
+    return indexed
+
+
 def _require_orientation(ds: Dataset) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if not hasattr(ds, "ImageOrientationPatient"):
         raise ValueError("CT slice missing ImageOrientationPatient")

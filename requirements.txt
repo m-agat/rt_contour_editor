@@ -1,6 +1,8 @@
 matplotlib==3.10.8
 numpy==2.4.3
+PySide6==6.9.3
 pydicom==3.0.1
+pytest==8.4.2
 rt_utils==1.2.7
 scipy==1.17.1
-skimage==0.0
+scikit-image==0.25.2
